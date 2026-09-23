@@ -3,14 +3,12 @@
 import { SquatCalibration } from './SquatCalibration.js';
 import { SQUAT_SPEC } from './SquatSpec.js';
 import { RepStateMachine } from '../core/RepStateMachine.js';
-import { toRepMachineConfig } from '../core/ExerciseSpec.js';
 import * as FeatureAPI from '../features/ExerciseFeatures.js';
 
-/*
- * Feature extractor compatibility.
- *
- * Supports the possible export names from ExerciseFeatures.js.
- */
+/* -------------------------------------------------------------------------- */
+/* Feature extractor                                                          */
+/* -------------------------------------------------------------------------- */
+
 const extractExerciseFeatures =
   FeatureAPI.extractExerciseFeatures ??
   FeatureAPI.extractFeatures ??
@@ -67,7 +65,8 @@ function hasUsablePose(poseFrame) {
     return false;
   }
 
-  const landmarks = getLandmarks(poseFrame);
+  const landmarks =
+    getLandmarks(poseFrame);
 
   return (
     Array.isArray(landmarks) &&
@@ -88,15 +87,11 @@ function getVisibility(landmark) {
     return landmark.presence;
   }
 
-  /*
-   * Test fixtures sometimes do not contain visibility.
-   * A present landmark is treated as visible in that case.
-   */
   return 1;
 }
 
 /* -------------------------------------------------------------------------- */
-/* MediaPipe landmark validation                                              */
+/* Required MediaPipe landmarks                                               */
 /* -------------------------------------------------------------------------- */
 
 const REQUIRED_LANDMARKS = Object.freeze([
@@ -118,26 +113,34 @@ const REQUIRED_LANDMARK_NAMES = Object.freeze({
 });
 
 function checkRequiredLandmarks(poseFrame) {
-  const landmarks = getLandmarks(poseFrame);
+  const landmarks =
+    getLandmarks(poseFrame);
 
   if (!Array.isArray(landmarks)) {
     return {
       valid: false,
+
       visibleCount: 0,
-      requiredCount: REQUIRED_LANDMARKS.length,
-      missing: REQUIRED_LANDMARKS.map(
-        (index) =>
-          REQUIRED_LANDMARK_NAMES[index] ??
-          index
-      ),
+
+      requiredCount:
+        REQUIRED_LANDMARKS.length,
+
+      missing:
+        REQUIRED_LANDMARKS.map(
+          (index) =>
+            REQUIRED_LANDMARK_NAMES[index] ??
+            index
+        ),
     };
   }
 
   const missing = [];
+
   let visibleCount = 0;
 
   for (const index of REQUIRED_LANDMARKS) {
-    const landmark = landmarks[index];
+    const landmark =
+      landmarks[index];
 
     const visible =
       !!landmark &&
@@ -175,14 +178,19 @@ function calculatePoseQuality(poseFrame) {
   if (!hasUsablePose(poseFrame)) {
     return {
       score: 0,
+
       percent: 0,
+
       valid: false,
+
       visibleCount: 0,
+
       totalCount: 33,
     };
   }
 
-  const landmarks = getLandmarks(poseFrame);
+  const landmarks =
+    getLandmarks(poseFrame);
 
   let visibleCount = 0;
 
@@ -219,14 +227,16 @@ function calculatePoseQuality(poseFrame) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Knee signal                                                                */
+/* Knee features                                                              */
 /* -------------------------------------------------------------------------- */
 
 function getKneeAngles(features) {
   if (!features) {
     return {
       left: null,
+
       right: null,
+
       average: null,
     };
   }
@@ -245,10 +255,6 @@ function getKneeAngles(features) {
     features.averageKneeAngle ??
     null;
 
-  /*
-   * Fallback if the generic extractor exposes bilateral values
-   * but does not calculate the average itself.
-   */
   if (!isFiniteNumber(average)) {
     if (
       isFiniteNumber(left) &&
@@ -292,7 +298,9 @@ function getKneeAngles(features) {
 function createEmptyTelemetry() {
   return {
     startKneeAngle: null,
+
     minKneeAngle: null,
+
     finalKneeAngle: null,
 
     romDegrees: null,
@@ -300,11 +308,96 @@ function createEmptyTelemetry() {
     durationMs: null,
 
     minLeftKneeAngle: null,
+
     minRightKneeAngle: null,
 
     maxKneeAsymmetryDegrees: 0,
 
     sampleCount: 0,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Calibrated repetition configuration                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * SquatCalibration gives us:
+ *
+ *   flexion = baselineAngle - currentKneeAngle
+ *
+ * We transform that into a high-low-high signal:
+ *
+ *   signal = 180 - flexion
+ *
+ * Approximately:
+ *
+ *   standing      -> high
+ *   descending    -> lower
+ *   bottom        -> very low
+ *   ascending     -> high again
+ *
+ * These are detector parameters, not universal biomechanical thresholds.
+ */
+
+function createCalibratedRepConfig() {
+  return {
+    direction:
+      'high-low-high',
+
+    /*
+     * Ready/lockout zone.
+     */
+    readyThreshold:
+      150,
+
+    /*
+     * Movement has started.
+     */
+    descendingThreshold:
+      140,
+
+    /*
+     * Deep movement zone.
+     */
+    bottomThreshold:
+      110,
+
+    /*
+     * Movement is returning upward.
+     */
+    ascendingThreshold:
+      125,
+
+    /*
+     * Near-standing return.
+     */
+    lockoutThreshold:
+      150,
+
+    /*
+     * Minimum excursion required.
+     */
+    minRom:
+      30,
+
+    /*
+     * Prevent tiny accidental motions.
+     */
+    minDurationMs:
+      300,
+
+    /*
+     * Prevent a stuck movement from lasting forever.
+     */
+    maxDurationMs:
+      6000,
+
+    /*
+     * Must return to ready before another rep.
+     */
+    requireReadyReset:
+      true,
   };
 }
 
@@ -316,50 +409,96 @@ export class SquatAnalyzer {
   constructor({
     calibration = {},
   } = {}) {
-    this.spec = SQUAT_SPEC;
+    this.spec =
+      SQUAT_SPEC;
 
     /*
-     * Generic temporal repetition engine.
+     * Generic engine exists immediately for compatibility.
+     *
+     * It gets replaced with calibrated configuration
+     * after standing calibration succeeds.
      */
     this.repEngine =
       new RepStateMachine(
-        toRepMachineConfig(
-          this.spec
-        )
+        {
+          direction:
+            this.spec.direction,
+
+          readyThreshold:
+            this.spec.thresholds.ready,
+
+          descendingThreshold:
+            this.spec.thresholds.start,
+
+          bottomThreshold:
+            this.spec.thresholds.extreme,
+
+          ascendingThreshold:
+            this.spec.thresholds.return,
+
+          lockoutThreshold:
+            this.spec.thresholds.lockout,
+
+          minRom:
+            this.spec.validation.minRom,
+
+          minDurationMs:
+            this.spec.validation.minDurationMs,
+
+          maxDurationMs:
+            this.spec.validation.maxDurationMs,
+
+          requireReadyReset:
+            this.spec.validation.requireReadyReset,
+        }
       );
 
     /*
-     * Individualized standing calibration.
+     * Individual standing calibration.
      */
     this.calibration =
       new SquatCalibration({
         ...calibration,
       });
 
-    this.phase = 'init';
+    this.phase =
+      'init';
 
-    this.repCount = 0;
+    this.repCount =
+      0;
 
-    /*
-     * Public compatibility fields.
-     */
-    this.activeRep = null;
-    this.lastRep = null;
+    this.activeRep =
+      null;
 
-    /*
-     * Frame counters.
-     */
-    this.totalFrames = 0;
-    this.validFrames = 0;
+    this.lastRep =
+      null;
 
-    this.lastTimestampMs = null;
+    this.totalFrames =
+      0;
+
+    this.validFrames =
+      0;
+
+    this.repEngineCalibrated =
+      false;
+
+    this.repEvent =
+      null;
+
+    this.latestRep =
+      null;
+
+    this.lastTimestampMs =
+      null;
 
     this.currentTelemetry =
       createEmptyTelemetry();
 
-    this.completedReps = [];
+    this.completedReps =
+      [];
 
-    this.telemetryStartTimeMs = null;
+    this.telemetryStartTimeMs =
+      null;
 
     this.lastResult =
       this._createInitialResult();
@@ -370,45 +509,81 @@ export class SquatAnalyzer {
   /* ---------------------------------------------------------------------- */
 
   reset() {
-    /*
-     * Re-create the generic rep engine.
-     */
     this.repEngine =
       new RepStateMachine(
-        toRepMachineConfig(
-          this.spec
-        )
+        {
+          direction:
+            this.spec.direction,
+
+          readyThreshold:
+            this.spec.thresholds.ready,
+
+          descendingThreshold:
+            this.spec.thresholds.start,
+
+          bottomThreshold:
+            this.spec.thresholds.extreme,
+
+          ascendingThreshold:
+            this.spec.thresholds.return,
+
+          lockoutThreshold:
+            this.spec.thresholds.lockout,
+
+          minRom:
+            this.spec.validation.minRom,
+
+          minDurationMs:
+            this.spec.validation.minDurationMs,
+
+          maxDurationMs:
+            this.spec.validation.maxDurationMs,
+
+          requireReadyReset:
+            this.spec.validation.requireReadyReset,
+        }
       );
 
-    /*
-     * Reset personalized calibration.
-     */
     this.calibration.reset();
 
-    this.phase = 'init';
+    this.phase =
+      'init';
 
-    this.repCount = 0;
+    this.repCount =
+      0;
 
-    /*
-     * Reset public compatibility state.
-     */
-    this.activeRep = null;
-    this.lastRep = null;
+    this.activeRep =
+      null;
 
-    /*
-     * Reset frame counters.
-     */
-    this.totalFrames = 0;
-    this.validFrames = 0;
+    this.lastRep =
+      null;
 
-    this.lastTimestampMs = null;
+    this.totalFrames =
+      0;
+
+    this.validFrames =
+      0;
+
+    this.repEngineCalibrated =
+      false;
+
+    this.repEvent =
+      null;
+
+    this.latestRep =
+      null;
+
+    this.lastTimestampMs =
+      null;
 
     this.currentTelemetry =
       createEmptyTelemetry();
 
-    this.completedReps = [];
+    this.completedReps =
+      [];
 
-    this.telemetryStartTimeMs = null;
+    this.telemetryStartTimeMs =
+      null;
 
     this.lastResult =
       this._createInitialResult();
@@ -417,22 +592,33 @@ export class SquatAnalyzer {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Main API                                                               */
+  /* Public API                                                             */
   /* ---------------------------------------------------------------------- */
 
   analyze(poseFrame) {
-    return this.update(poseFrame);
+    return this.update(
+      poseFrame
+    );
   }
 
   process(poseFrame) {
-    return this.update(poseFrame);
+    return this.update(
+      poseFrame
+    );
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Main update                                                            */
+  /* ---------------------------------------------------------------------- */
+
   update(poseFrame) {
-    /*
-     * Count every frame presented to the analyzer.
-     */
     this.totalFrames += 1;
+
+    /*
+     * Per-frame event.
+     */
+    this.repEvent =
+      null;
 
     const timestampMs =
       getTimestampMs(
@@ -449,31 +635,37 @@ export class SquatAnalyzer {
         poseFrame
       );
 
-    /*
-     * ---------------------------------------------------------------
-     * Timestamp validation
-     * ---------------------------------------------------------------
-     */
+    /* --------------------------------------------------------------- */
+    /* Timestamp                                                        */
+    /* --------------------------------------------------------------- */
 
     if (
       timestampMs === null
     ) {
-      this.phase = 'init';
+      this.phase =
+        'init';
 
       return this._buildResult({
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'invalid_timestamp',
@@ -482,23 +674,30 @@ export class SquatAnalyzer {
 
     if (
       this.lastTimestampMs !== null &&
-      timestampMs <
+      timestampMs <=
         this.lastTimestampMs
     ) {
       return this._buildResult({
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'non_monotonic_timestamp',
@@ -508,33 +707,39 @@ export class SquatAnalyzer {
     this.lastTimestampMs =
       timestampMs;
 
-    /*
-     * ---------------------------------------------------------------
-     * Pose validation
-     * ---------------------------------------------------------------
-     */
+    /* --------------------------------------------------------------- */
+    /* Pose                                                            */
+    /* --------------------------------------------------------------- */
 
     if (
       !hasUsablePose(
         poseFrame
       )
     ) {
-      this.phase = 'init';
+      this.phase =
+        'init';
 
       return this._buildResult({
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'no_pose',
@@ -544,22 +749,30 @@ export class SquatAnalyzer {
     if (
       !required.valid
     ) {
-      this.phase = 'init';
+      this.phase =
+        'init';
 
       return this._buildResult({
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'missing_required_landmarks',
@@ -569,33 +782,39 @@ export class SquatAnalyzer {
     if (
       !poseQuality.valid
     ) {
-      this.phase = 'init';
+      this.phase =
+        'init';
 
       return this._buildResult({
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'insufficient_pose_quality',
       });
     }
 
-    /*
-     * ---------------------------------------------------------------
-     * Feature extraction
-     * ---------------------------------------------------------------
-     */
+    /* --------------------------------------------------------------- */
+    /* Features                                                         */
+    /* --------------------------------------------------------------- */
 
     let features;
 
@@ -610,16 +829,23 @@ export class SquatAnalyzer {
         poseQuality,
         required,
 
-        averageKneeAngle: null,
-        leftKneeAngle: null,
-        rightKneeAngle: null,
+        averageKneeAngle:
+          null,
+
+        leftKneeAngle:
+          null,
+
+        rightKneeAngle:
+          null,
 
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'feature_extraction_failed',
@@ -636,11 +862,9 @@ export class SquatAnalyzer {
         features
       );
 
-    /*
-     * ---------------------------------------------------------------
-     * Knee signal validation
-     * ---------------------------------------------------------------
-     */
+    /* --------------------------------------------------------------- */
+    /* Knee signal                                                      */
+    /* --------------------------------------------------------------- */
 
     if (
       !isFiniteNumber(
@@ -663,9 +887,11 @@ export class SquatAnalyzer {
         calibration:
           this.calibration.getSnapshot(),
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: false,
+        validFrame:
+          false,
 
         reason:
           'knee_angle_unavailable',
@@ -673,10 +899,13 @@ export class SquatAnalyzer {
     }
 
     /*
-     * ---------------------------------------------------------------
-     * PERSONAL BASELINE CALIBRATION
-     * ---------------------------------------------------------------
+     * Valid analyzer frame.
      */
+    this.validFrames += 1;
+
+    /* --------------------------------------------------------------- */
+    /* Calibration                                                      */
+    /* --------------------------------------------------------------- */
 
     const calibrationResult =
       this.calibration.update(
@@ -684,22 +913,11 @@ export class SquatAnalyzer {
         timestampMs
       );
 
-    /*
-     * This frame passed pose + landmark + quality + feature
-     * validation, so it is a valid analyzer frame.
-     */
-    this.validFrames += 1;
-
-    /*
-     * ---------------------------------------------------------------
-     * Calibration failed
-     * ---------------------------------------------------------------
-     */
-
     if (
       calibrationResult.failed
     ) {
-      this.phase = 'init';
+      this.phase =
+        'init';
 
       return this._buildResult({
         poseQuality,
@@ -717,9 +935,11 @@ export class SquatAnalyzer {
         calibration:
           calibrationResult,
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: true,
+        validFrame:
+          true,
 
         reason:
           calibrationResult.reason,
@@ -727,15 +947,13 @@ export class SquatAnalyzer {
     }
 
     /*
-     * ---------------------------------------------------------------
-     * Calibration still running
-     * ---------------------------------------------------------------
+     * Calibration is still collecting standing samples.
      */
-
     if (
       !calibrationResult.ready
     ) {
-      this.phase = 'ready';
+      this.phase =
+        'ready';
 
       return this._buildResult({
         poseQuality,
@@ -753,30 +971,119 @@ export class SquatAnalyzer {
         calibration:
           calibrationResult,
 
-        flexion: null,
+        flexion:
+          null,
 
-        validFrame: true,
+        validFrame:
+          true,
 
         reason:
           calibrationResult.reason,
       });
     }
 
-    /*
-     * ---------------------------------------------------------------
-     * Calibrated tracking
-     * ---------------------------------------------------------------
-     */
+    /* --------------------------------------------------------------- */
+    /* Calibrated movement signal                                       */
+    /* --------------------------------------------------------------- */
 
     const flexion =
       this.calibration.getFlexion(
         knees.average
       );
 
-    this.phase =
-      this._deriveDiagnosticPhase(
+    if (
+      !isFiniteNumber(
         flexion
+      )
+    ) {
+      this.phase =
+        'init';
+
+      return this._buildResult({
+        poseQuality,
+        required,
+
+        averageKneeAngle:
+          knees.average,
+
+        leftKneeAngle:
+          knees.left,
+
+        rightKneeAngle:
+          knees.right,
+
+        calibration:
+          calibrationResult,
+
+        flexion:
+          null,
+
+        validFrame:
+          true,
+
+        reason:
+          'invalid_flexion',
+      });
+    }
+
+    /*
+     * Convert flexion to high-low-high signal.
+     *
+     * 0° flexion  -> 180
+     * 10°         -> 170
+     * 30°         -> 150
+     * 50°         -> 130
+     * 70°         -> 110
+     */
+    const normalizedSignal =
+      Math.max(
+        0,
+        Math.min(
+          180,
+          180 - flexion
+        )
       );
+
+    /* --------------------------------------------------------------- */
+    /* Initialize calibrated rep engine                                */
+    /* --------------------------------------------------------------- */
+
+    if (
+      !this.repEngineCalibrated
+    ) {
+      this.repEngine =
+        new RepStateMachine(
+          createCalibratedRepConfig()
+        );
+
+      this.repEngineCalibrated =
+        true;
+
+      /*
+       * IMPORTANT:
+       *
+       * Calibration can finish on a frame that is already
+       * somewhat below standing. We only prime the engine
+       * when that frame is inside the ready region.
+       *
+       * The -1 timestamp guarantees the next real frame
+       * remains strictly monotonic for RepStateMachine.
+       */
+      if (
+        normalizedSignal >=
+        150
+      ) {
+        this.repEngine.update(
+          normalizedSignal,
+          timestampMs - 1,
+          true
+        );
+      }
+    }
+
+    /* --------------------------------------------------------------- */
+    /* Telemetry                                                        */
+    /* --------------------------------------------------------------- */
 
     this._updateTelemetry(
       knees,
@@ -784,12 +1091,163 @@ export class SquatAnalyzer {
       flexion
     );
 
+    /* --------------------------------------------------------------- */
+    /* Actual repetition detection                                     */
+    /* --------------------------------------------------------------- */
+
+    const repResult =
+      this.repEngine.update(
+        normalizedSignal,
+        timestampMs,
+        true
+      );
+
     this.repCount =
       Number.isFinite(
-        this.repEngine?.reps
+        repResult.reps
       )
-        ? this.repEngine.reps
+        ? repResult.reps
         : 0;
+
+    /* --------------------------------------------------------------- */
+    /* Rep event                                                        */
+    /* --------------------------------------------------------------- */
+
+    this.repEvent = {
+      completed:
+        !!repResult.repCompleted,
+
+      accepted:
+        !!repResult.repAccepted,
+
+      reason:
+        repResult.reason ??
+        null,
+
+      rom:
+        repResult.rom ??
+        null,
+
+      durationMs:
+        repResult.durationMs ??
+        null,
+    };
+
+    /* --------------------------------------------------------------- */
+    /* Completed rep                                                   */
+    /* --------------------------------------------------------------- */
+
+    if (
+      repResult.repCompleted
+    ) {
+      const completedRep = {
+        number:
+          repResult.repAccepted
+            ? repResult.reps
+            : repResult.reps + 1,
+
+        accepted:
+          !!repResult.repAccepted,
+
+        rom:
+          repResult.rom,
+
+        durationMs:
+          repResult.durationMs,
+
+        minimumKneeAngle:
+          this.currentTelemetry
+            .minKneeAngle,
+
+        maximumKneeAsymmetry:
+          this.currentTelemetry
+            .maxKneeAsymmetryDegrees,
+
+        startKneeAngle:
+          this.currentTelemetry
+            .startKneeAngle,
+
+        finalKneeAngle:
+          this.currentTelemetry
+            .finalKneeAngle,
+
+        reason:
+          repResult.reason,
+      };
+
+      this.latestRep =
+        completedRep;
+
+      this.lastRep =
+        completedRep;
+
+      this.completedReps.push(
+        completedRep
+      );
+
+      /*
+       * Movement telemetry starts fresh.
+       */
+      this.currentTelemetry =
+        createEmptyTelemetry();
+
+      this.telemetryStartTimeMs =
+        null;
+    }
+
+    /* --------------------------------------------------------------- */
+    /* Active rep                                                       */
+    /* --------------------------------------------------------------- */
+
+    const engineState =
+      this.repEngine?.state ??
+      'init';
+
+    if (
+      engineState ===
+        'descending' ||
+      engineState ===
+        'bottom' ||
+      engineState ===
+        'ascending'
+    ) {
+      this.activeRep = {
+        phase:
+          engineState,
+
+        signal:
+          normalizedSignal,
+
+        flexion,
+
+        rom:
+          this.currentTelemetry
+            .romDegrees,
+
+        durationMs:
+          this.currentTelemetry
+            .durationMs,
+      };
+    } else {
+      this.activeRep =
+        null;
+    }
+
+    if (
+      repResult.repCompleted
+    ) {
+      this.activeRep =
+        null;
+    }
+
+    /* --------------------------------------------------------------- */
+    /* Visible phase                                                    */
+    /* --------------------------------------------------------------- */
+
+    this.phase =
+      this._deriveEnginePhase(
+        engineState
+      );
 
     return this._buildResult({
       poseQuality,
@@ -809,45 +1267,47 @@ export class SquatAnalyzer {
 
       flexion,
 
-      validFrame: true,
+      normalizedSignal,
+
+      validFrame:
+        true,
 
       reason:
-        'tracking',
+        repResult.repCompleted
+          ? repResult.repAccepted
+            ? 'rep_accepted'
+            : (
+                repResult.reason ??
+                'rep_rejected'
+              )
+          : 'tracking',
     });
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Diagnostic phase                                                       */
+  /* Engine phase                                                           */
   /* ---------------------------------------------------------------------- */
 
-  _deriveDiagnosticPhase(
-    flexion
+  _deriveEnginePhase(
+    state
   ) {
-    if (
-      !isFiniteNumber(
-        flexion
-      )
-    ) {
-      return 'init';
-    }
+    switch (state) {
+      case 'ready':
+        return 'ready';
 
-    /*
-     * These are diagnostic zones only.
-     * They are not rep-counting thresholds.
-     */
-    if (
-      flexion < 8
-    ) {
-      return 'ready';
-    }
+      case 'descending':
+        return 'descending';
 
-    if (
-      flexion < 35
-    ) {
-      return 'descending';
-    }
+      case 'bottom':
+        return 'bottom';
 
-    return 'bottom';
+      case 'ascending':
+        return 'ascending';
+
+      case 'init':
+      default:
+        return 'init';
+    }
   }
 
   /* ---------------------------------------------------------------------- */
@@ -871,13 +1331,15 @@ export class SquatAnalyzer {
     }
 
     /*
-     * Start telemetry once movement exceeds
-     * the small standing-noise zone.
+     * Start movement telemetry when flexion
+     * leaves the small standing-noise band.
      */
     if (
-      this.currentTelemetry.sampleCount ===
-        0 &&
-      isFiniteNumber(flexion) &&
+      this.currentTelemetry
+        .sampleCount === 0 &&
+      isFiniteNumber(
+        flexion
+      ) &&
       flexion >= 8
     ) {
       this.currentTelemetry = {
@@ -890,9 +1352,11 @@ export class SquatAnalyzer {
         finalKneeAngle:
           average,
 
-        romDegrees: 0,
+        romDegrees:
+          0,
 
-        durationMs: 0,
+        durationMs:
+          0,
 
         minLeftKneeAngle:
           isFiniteNumber(
@@ -908,9 +1372,11 @@ export class SquatAnalyzer {
             ? knees.right
             : null,
 
-        maxKneeAsymmetryDegrees: 0,
+        maxKneeAsymmetryDegrees:
+          0,
 
-        sampleCount: 1,
+        sampleCount:
+          1,
       };
 
       this.telemetryStartTimeMs =
@@ -971,8 +1437,12 @@ export class SquatAnalyzer {
     }
 
     if (
-      isFiniteNumber(knees.left) &&
-      isFiniteNumber(knees.right)
+      isFiniteNumber(
+        knees.left
+      ) &&
+      isFiniteNumber(
+        knees.right
+      )
     ) {
       const asymmetry =
         Math.abs(
@@ -1018,16 +1488,43 @@ export class SquatAnalyzer {
 
     flexion,
 
+    normalizedSignal =
+      null,
+
     validFrame,
 
     reason,
 
-    error = null,
+    error =
+      null,
   }) {
     const trackingUsable =
       !!validFrame &&
       !!required?.valid &&
       !!poseQuality?.valid;
+
+    const knee = {
+      left:
+        isFiniteNumber(
+          leftKneeAngle
+        )
+          ? leftKneeAngle
+          : null,
+
+      right:
+        isFiniteNumber(
+          rightKneeAngle
+        )
+          ? rightKneeAngle
+          : null,
+
+      average:
+        isFiniteNumber(
+          averageKneeAngle
+        )
+          ? averageKneeAngle
+          : null,
+    };
 
     const tracking = {
       usable:
@@ -1041,8 +1538,25 @@ export class SquatAnalyzer {
           ? 'tracking'
           : reason,
 
-      poseQuality:
-        poseQuality.percent,
+      /*
+       * Keep the UI-compatible nested object.
+       */
+      poseQuality: {
+        score:
+          poseQuality.score,
+
+        percent:
+          poseQuality.percent,
+
+        valid:
+          poseQuality.valid,
+
+        visibleLandmarks:
+          poseQuality.visibleCount,
+
+        totalLandmarks:
+          poseQuality.totalCount,
+      },
 
       poseQualityScore:
         poseQuality.score,
@@ -1059,18 +1573,13 @@ export class SquatAnalyzer {
       requiredLandmarksTotal:
         required.requiredCount,
 
-      /*
-       * Existing UI/tests expect:
-       *
-       * result.tracking.requiredLandmarks.valid
-       * result.tracking.requiredLandmarks.missing
-       */
       requiredLandmarks: {
         valid:
           !!required?.valid,
 
         visibleCount:
-          required?.visibleCount ?? 0,
+          required?.visibleCount ??
+          0,
 
         requiredCount:
           required?.requiredCount ??
@@ -1087,7 +1596,7 @@ export class SquatAnalyzer {
 
     const result = {
       /*
-       * Primary state.
+       * Core state.
        */
       phase:
         this.phase,
@@ -1111,7 +1620,16 @@ export class SquatAnalyzer {
         this.validFrames,
 
       /*
-       * Existing tracking contract.
+       * Rep event.
+       */
+      repEvent:
+        this.repEvent,
+
+      latestRep:
+        this.latestRep,
+
+      /*
+       * Tracking.
        */
       tracking,
 
@@ -1119,7 +1637,7 @@ export class SquatAnalyzer {
        * Pose diagnostics.
        */
       poseQuality:
-        poseQuality.percent,
+        poseQuality,
 
       poseQualityScore:
         poseQuality.score,
@@ -1140,53 +1658,43 @@ export class SquatAnalyzer {
         required.requiredCount,
 
       /*
-       * Knee signal.
+       * Knee values.
        */
+      knee,
+
       averageKneeAngle:
-        isFiniteNumber(
-          averageKneeAngle
-        )
-          ? averageKneeAngle
-          : null,
+        knee.average,
 
       kneeAngle:
-        isFiniteNumber(
-          averageKneeAngle
-        )
-          ? averageKneeAngle
-          : null,
+        knee.average,
 
       leftKneeAngle:
-        isFiniteNumber(
-          leftKneeAngle
-        )
-          ? leftKneeAngle
-          : null,
+        knee.left,
 
       rightKneeAngle:
-        isFiniteNumber(
-          rightKneeAngle
-        )
-          ? rightKneeAngle
-          : null,
+        knee.right,
 
       /*
-       * Compatibility field expected by
-       * SquatAnalyzer tests.
+       * Primary raw signal.
        */
       signal:
-        isFiniteNumber(
-          averageKneeAngle
-        )
-          ? averageKneeAngle
-          : null,
+        knee.average,
 
       /*
-       * Personalized signal.
+       * Personalized movement.
        */
       flexion:
-        isFiniteNumber(flexion)
+        isFiniteNumber(
+          flexion
+        )
           ? flexion
+          : null,
+
+      normalizedSignal:
+        isFiniteNumber(
+          normalizedSignal
+        )
+          ? normalizedSignal
           : null,
 
       baselineAngle:
@@ -1209,15 +1717,19 @@ export class SquatAnalyzer {
       error,
 
       /*
-       * Public engine.
+       * Rep engine.
        */
       repEngine: {
         reps:
           this.repEngine?.reps ??
           0,
 
+        state:
+          this.repEngine?.state ??
+          'init',
+
         phase:
-          this.repEngine?.phase ??
+          this.repEngine?.state ??
           this.phase,
       },
 
@@ -1232,7 +1744,7 @@ export class SquatAnalyzer {
         this.completedReps.slice(),
 
       /*
-       * Structured diagnostics.
+       * Structured analysis.
        */
       analysis: {
         calibrationState:
@@ -1247,9 +1759,29 @@ export class SquatAnalyzer {
           null,
 
         flexion:
-          isFiniteNumber(flexion)
+          isFiniteNumber(
+            flexion
+          )
             ? flexion
             : null,
+
+        normalizedSignal:
+          isFiniteNumber(
+            normalizedSignal
+          )
+            ? normalizedSignal
+            : null,
+
+        knee: {
+          left:
+            knee.left,
+
+          right:
+            knee.right,
+
+          average:
+            knee.average,
+        },
 
         phase:
           this.phase,
@@ -1292,6 +1824,12 @@ export class SquatAnalyzer {
       validFrames:
         0,
 
+      repEvent:
+        null,
+
+      latestRep:
+        null,
+
       tracking: {
         usable:
           false,
@@ -1302,8 +1840,22 @@ export class SquatAnalyzer {
         reason:
           'not_started',
 
-        poseQuality:
-          0,
+        poseQuality: {
+          score:
+            0,
+
+          percent:
+            0,
+
+          valid:
+            false,
+
+          visibleLandmarks:
+            0,
+
+          totalLandmarks:
+            33,
+        },
 
         poseQualityScore:
           0,
@@ -1339,8 +1891,22 @@ export class SquatAnalyzer {
         },
       },
 
-      poseQuality:
-        0,
+      poseQuality: {
+        score:
+          0,
+
+        percent:
+          0,
+
+        valid:
+          false,
+
+        visibleLandmarks:
+          0,
+
+        totalLandmarks:
+          33,
+      },
 
       poseQualityScore:
         0,
@@ -1360,6 +1926,17 @@ export class SquatAnalyzer {
       requiredLandmarksTotal:
         REQUIRED_LANDMARKS.length,
 
+      knee: {
+        left:
+          null,
+
+        right:
+          null,
+
+        average:
+          null,
+      },
+
       averageKneeAngle:
         null,
 
@@ -1376,6 +1953,9 @@ export class SquatAnalyzer {
         null,
 
       flexion:
+        null,
+
+      normalizedSignal:
         null,
 
       baselineAngle:
@@ -1398,6 +1978,9 @@ export class SquatAnalyzer {
       repEngine: {
         reps:
           0,
+
+        state:
+          'init',
 
         phase:
           'init',
@@ -1422,6 +2005,20 @@ export class SquatAnalyzer {
         flexion:
           null,
 
+        normalizedSignal:
+          null,
+
+        knee: {
+          left:
+            null,
+
+          right:
+            null,
+
+          average:
+            null,
+        },
+
         phase:
           'init',
       },
@@ -1441,8 +2038,12 @@ export class SquatAnalyzer {
           this.repEngine?.reps ??
           0,
 
+        state:
+          this.repEngine?.state ??
+          'init',
+
         phase:
-          this.repEngine?.phase ??
+          this.repEngine?.state ??
           this.phase,
       },
 
@@ -1457,6 +2058,12 @@ export class SquatAnalyzer {
 
       validFrames:
         this.validFrames,
+
+      repEvent:
+        this.repEvent,
+
+      latestRep:
+        this.latestRep,
 
       tracking: {
         ...(this.lastResult.tracking ??
