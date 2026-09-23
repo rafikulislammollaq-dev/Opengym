@@ -5,75 +5,217 @@ import {
   DrawingUtils,
 } from '@mediapipe/tasks-vision'
 
+import {
+  createPoseFrame,
+} from '../ai/pose/PoseFrame.js'
+
+import {
+  PoseLandmarkFilter,
+} from '../ai/filters/OneEuroFilter.js'
+
+import {
+  SquatAnalyzer,
+} from '../ai/exercises/SquatAnalyzer.js'
+
+
 const WASM_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm'
 
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
 
+
 export default function LivePoseTest() {
+  // =========================================================
+  // DOM REFERENCES
+  // =========================================================
+
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const fileInputRef = useRef(null)
 
+  // =========================================================
+  // AI REFERENCES
+  // =========================================================
+
   const poseLandmarkerRef = useRef(null)
+
+  const imageFilterRef = useRef(
+    new PoseLandmarkFilter({
+      minCutoff: 1.0,
+      beta: 0.005,
+      dCutoff: 1.0,
+    })
+  )
+
+  const worldFilterRef = useRef(
+    new PoseLandmarkFilter({
+      minCutoff: 1.0,
+      beta: 0.005,
+      dCutoff: 1.0,
+    })
+  )
+
+  const squatAnalyzerRef = useRef(
+    new SquatAnalyzer()
+  )
+
+  // =========================================================
+  // PROCESSING REFERENCES
+  // =========================================================
+
   const animationFrameRef = useRef(null)
+
+  const processingActiveRef = useRef(false)
+
   const streamRef = useRef(null)
+
   const videoUrlRef = useRef(null)
 
-  const [status, setStatus] = useState('Loading MediaPipe...')
-  const [mode, setMode] = useState('none')
-  const [cameraReady, setCameraReady] = useState(false)
-  const [personDetected, setPersonDetected] = useState(false)
-  const [fps, setFps] = useState(0)
-  const [videoName, setVideoName] = useState('')
+  const endedRef = useRef(false)
+
+  // =========================================================
+  // UI STATE
+  // =========================================================
+
+  const [status, setStatus] =
+    useState('Loading MediaPipe...')
+
+  const [mode, setMode] =
+    useState('none')
+
+  const [sourceName, setSourceName] =
+    useState('')
+
+  const [cameraReady, setCameraReady] =
+    useState(false)
+
+  const [personDetected, setPersonDetected] =
+    useState(false)
+
+  const [fps, setFps] =
+    useState(0)
+
+  // =========================================================
+  // SQUAT STATE
+  // =========================================================
+
+  const [reps, setReps] =
+    useState(0)
+
+  const [phase, setPhase] =
+    useState('init')
+
+  const [leftKnee, setLeftKnee] =
+    useState(null)
+
+  const [rightKnee, setRightKnee] =
+    useState(null)
+
+  const [averageKnee, setAverageKnee] =
+    useState(null)
+
+  const [rom, setRom] =
+    useState(null)
+
+  const [poseQuality, setPoseQuality] =
+    useState(null)
+
+  const [latestRep, setLatestRep] =
+    useState(null)
+
+
+  // =========================================================
+  // INITIALIZE MEDIAPIPE
+  // =========================================================
 
   useEffect(() => {
     let cancelled = false
 
     async function initialize() {
       try {
-        setStatus('Loading MediaPipe...')
+        setStatus(
+          'Loading MediaPipe...'
+        )
 
-        const vision = await FilesetResolver.forVisionTasks(WASM_URL)
+        const vision =
+          await FilesetResolver.forVisionTasks(
+            WASM_URL
+          )
 
         let poseLandmarker
 
+        // ---------------------------------------------------
+        // Try GPU first
+        // ---------------------------------------------------
+
         try {
-          poseLandmarker = await PoseLandmarker.createFromOptions(
-            vision,
-            {
-              baseOptions: {
-                modelAssetPath: MODEL_URL,
-                delegate: 'GPU',
-              },
-              runningMode: 'VIDEO',
-              numPoses: 1,
-              minPoseDetectionConfidence: 0.5,
-              minPosePresenceConfidence: 0.5,
-              minTrackingConfidence: 0.5,
-            }
-          )
+          poseLandmarker =
+            await PoseLandmarker.createFromOptions(
+              vision,
+              {
+                baseOptions: {
+                  modelAssetPath:
+                    MODEL_URL,
+
+                  delegate:
+                    'GPU',
+                },
+
+                runningMode:
+                  'VIDEO',
+
+                numPoses:
+                  1,
+
+                minPoseDetectionConfidence:
+                  0.35,
+
+                minPosePresenceConfidence:
+                  0.35,
+
+                minTrackingConfidence:
+                  0.35,
+              }
+            )
         } catch (gpuError) {
           console.warn(
-            'GPU delegate failed. Falling back to CPU.',
+            'GPU initialization failed. Falling back to CPU.',
             gpuError
           )
 
-          poseLandmarker = await PoseLandmarker.createFromOptions(
-            vision,
-            {
-              baseOptions: {
-                modelAssetPath: MODEL_URL,
-                delegate: 'CPU',
-              },
-              runningMode: 'VIDEO',
-              numPoses: 1,
-              minPoseDetectionConfidence: 0.5,
-              minPosePresenceConfidence: 0.5,
-              minTrackingConfidence: 0.5,
-            }
-          )
+          // -------------------------------------------------
+          // CPU fallback
+          // -------------------------------------------------
+
+          poseLandmarker =
+            await PoseLandmarker.createFromOptions(
+              vision,
+              {
+                baseOptions: {
+                  modelAssetPath:
+                    MODEL_URL,
+
+                  delegate:
+                    'CPU',
+                },
+
+                runningMode:
+                  'VIDEO',
+
+                numPoses:
+                  1,
+
+                minPoseDetectionConfidence:
+                  0.35,
+
+                minPosePresenceConfidence:
+                  0.35,
+
+                minTrackingConfidence:
+                  0.35,
+              }
+            )
         }
 
         if (cancelled) {
@@ -81,10 +223,17 @@ export default function LivePoseTest() {
           return
         }
 
-        poseLandmarkerRef.current = poseLandmarker
-        setStatus('MediaPipe ready ✓ — choose Camera or Upload Video')
+        poseLandmarkerRef.current =
+          poseLandmarker
+
+        setStatus(
+          'MediaPipe ready ✓ — choose Camera or Upload Video'
+        )
       } catch (error) {
-        console.error('MediaPipe initialization failed:', error)
+        console.error(
+          'MediaPipe initialization failed:',
+          error
+        )
 
         setStatus(
           error instanceof Error
@@ -99,195 +248,726 @@ export default function LivePoseTest() {
     return () => {
       cancelled = true
 
+      processingActiveRef.current =
+        false
+
       if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
+        cancelAnimationFrame(
+          animationFrameRef.current
+        )
+
+        animationFrameRef.current =
+          null
       }
 
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
+        streamRef.current
+          .getTracks()
+          .forEach(track =>
+            track.stop()
+          )
+
+        streamRef.current =
+          null
       }
 
       if (videoUrlRef.current) {
-        URL.revokeObjectURL(videoUrlRef.current)
+        URL.revokeObjectURL(
+          videoUrlRef.current
+        )
+
+        videoUrlRef.current =
+          null
       }
 
       if (poseLandmarkerRef.current) {
         poseLandmarkerRef.current.close()
-        poseLandmarkerRef.current = null
+
+        poseLandmarkerRef.current =
+          null
       }
     }
   }, [])
 
-  const stopProcessing = () => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
 
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
+  // =========================================================
+  // RESET AI SESSION
+  // =========================================================
 
-    if (videoRef.current) {
-      videoRef.current.pause()
-      videoRef.current.srcObject = null
-    }
+  function resetAnalysis() {
+    imageFilterRef.current.reset()
 
-    if (videoUrlRef.current) {
-      URL.revokeObjectURL(videoUrlRef.current)
-      videoUrlRef.current = null
-    }
+    worldFilterRef.current.reset()
 
-    const canvas = canvasRef.current
+    squatAnalyzerRef.current.reset()
 
-    if (canvas) {
-      const ctx = canvas.getContext('2d')
+    setReps(0)
 
-      if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-      }
-    }
+    setPhase('init')
 
-    setCameraReady(false)
+    setLeftKnee(null)
+
+    setRightKnee(null)
+
+    setAverageKnee(null)
+
+    setRom(null)
+
+    setPoseQuality(null)
+
+    setLatestRep(null)
+
     setPersonDetected(false)
-    setFps(0)
   }
 
-  const processVideo = () => {
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    const poseLandmarker = poseLandmarkerRef.current
 
-    if (!video || !canvas || !poseLandmarker) {
+  // =========================================================
+  // CLEAR CANVAS
+  // =========================================================
+
+  function clearCanvas() {
+    const canvas =
+      canvasRef.current
+
+    if (!canvas) {
       return
     }
 
-    const ctx = canvas.getContext('2d')
+    const ctx =
+      canvas.getContext('2d')
 
     if (!ctx) {
       return
     }
 
-    const drawingUtils = new DrawingUtils(ctx)
+    ctx.clearRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    )
+  }
 
-    let frames = 0
-    let fpsStart = performance.now()
 
-    const loop = () => {
-      if (!video || video.readyState < 2) {
-        animationFrameRef.current = requestAnimationFrame(loop)
-        return
-      }
+  // =========================================================
+  // STOP ONLY THE AI LOOP
+  // =========================================================
 
-      if (video.videoWidth === 0 || video.videoHeight === 0) {
-        animationFrameRef.current = requestAnimationFrame(loop)
-        return
-      }
+  function stopProcessing() {
+    processingActiveRef.current =
+      false
 
-      if (
-        canvas.width !== video.videoWidth ||
-        canvas.height !== video.videoHeight
-      ) {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-      }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(
+        animationFrameRef.current
+      )
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      animationFrameRef.current =
+        null
+    }
+  }
 
-      const timestamp = performance.now()
 
-      try {
-        const result = poseLandmarker.detectForVideo(
+  // =========================================================
+  // STOP CURRENT SOURCE COMPLETELY
+  // =========================================================
+
+  function stopSource() {
+    stopProcessing()
+
+    if (streamRef.current) {
+      streamRef.current
+        .getTracks()
+        .forEach(track =>
+          track.stop()
+        )
+
+      streamRef.current =
+        null
+    }
+
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(
+        videoUrlRef.current
+      )
+
+      videoUrlRef.current =
+        null
+    }
+
+    const video =
+      videoRef.current
+
+    if (video) {
+      video.pause()
+
+      video.srcObject =
+        null
+
+      video.removeAttribute(
+        'src'
+      )
+
+      video.load()
+
+      video.onplay =
+        null
+
+      video.onpause =
+        null
+
+      video.onended =
+        null
+
+      video.onseeked =
+        null
+
+      video.onloadedmetadata =
+        null
+
+      video.controls =
+        false
+    }
+
+    endedRef.current =
+      false
+
+    clearCanvas()
+
+    resetAnalysis()
+
+    setCameraReady(false)
+
+    setFps(0)
+
+    setSourceName('')
+  }
+
+
+  // =========================================================
+  // PROCESS CURRENT FRAME
+  // =========================================================
+
+  function processCurrentFrame() {
+    const video =
+      videoRef.current
+
+    const canvas =
+      canvasRef.current
+
+    const poseLandmarker =
+      poseLandmarkerRef.current
+
+    if (
+      !processingActiveRef.current ||
+      !video ||
+      !canvas ||
+      !poseLandmarker
+    ) {
+      return
+    }
+
+    if (
+      video.readyState <
+      HTMLMediaElement.HAVE_CURRENT_DATA
+    ) {
+      animationFrameRef.current =
+        requestAnimationFrame(
+          processCurrentFrame
+        )
+
+      return
+    }
+
+    if (
+      video.videoWidth === 0 ||
+      video.videoHeight === 0
+    ) {
+      animationFrameRef.current =
+        requestAnimationFrame(
+          processCurrentFrame
+        )
+
+      return
+    }
+
+    // -------------------------------------------------------
+    // Match canvas to video resolution
+    // -------------------------------------------------------
+
+    if (
+      canvas.width !==
+        video.videoWidth ||
+      canvas.height !==
+        video.videoHeight
+    ) {
+      canvas.width =
+        video.videoWidth
+
+      canvas.height =
+        video.videoHeight
+    }
+
+    const ctx =
+      canvas.getContext('2d')
+
+    if (!ctx) {
+      return
+    }
+
+    ctx.clearRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    )
+
+    const drawingUtils =
+      new DrawingUtils(ctx)
+
+    // -------------------------------------------------------
+    // MediaPipe video timestamp
+    // -------------------------------------------------------
+
+    const timestamp =
+      performance.now()
+
+    try {
+      const result =
+        poseLandmarker.detectForVideo(
           video,
           timestamp
         )
 
-        const landmarks = result?.landmarks ?? []
+      const rawImageLandmarks =
+        result?.landmarks?.[0] ?? []
 
-        if (landmarks.length > 0) {
-          setPersonDetected(true)
+      const rawWorldLandmarks =
+        result?.worldLandmarks?.[0] ?? []
 
-          const person = landmarks[0]
+      // =====================================================
+      // NO PERSON
+      // =====================================================
 
-          drawingUtils.drawConnectors(
-            person,
-            PoseLandmarker.POSE_CONNECTIONS
+      if (
+        rawImageLandmarks.length === 0
+      ) {
+        setPersonDetected(false)
+
+        setPoseQuality(null)
+
+        setStatus(
+          'No person detected'
+        )
+
+        animationFrameRef.current =
+          requestAnimationFrame(
+            processCurrentFrame
           )
 
-          drawingUtils.drawLandmarks(person, {
-            radius: 4,
-          })
-        } else {
-          setPersonDetected(false)
-        }
-
-        frames++
-
-        const now = performance.now()
-
-        if (now - fpsStart >= 1000) {
-          setFps(frames)
-          frames = 0
-          fpsStart = now
-        }
-      } catch (error) {
-        console.error('Pose detection error:', error)
+        return
       }
 
-      animationFrameRef.current = requestAnimationFrame(loop)
+      // =====================================================
+      // FILTER IMAGE LANDMARKS
+      // =====================================================
+
+      const filteredImageLandmarks =
+        imageFilterRef.current.filter(
+          rawImageLandmarks,
+          timestamp
+        )
+
+      // =====================================================
+      // FILTER WORLD LANDMARKS
+      // =====================================================
+
+      const filteredWorldLandmarks =
+        rawWorldLandmarks.length > 0
+          ? worldFilterRef.current.filter(
+              rawWorldLandmarks,
+              timestamp
+            )
+          : []
+
+      // =====================================================
+      // DRAW SKELETON IMMEDIATELY
+      //
+      // IMPORTANT:
+      // Visualization is independent from exercise validity.
+      // A bad frame should not freeze/remove the skeleton.
+      // =====================================================
+
+      drawingUtils.drawConnectors(
+        filteredImageLandmarks,
+        PoseLandmarker.POSE_CONNECTIONS
+      )
+
+      drawingUtils.drawLandmarks(
+        filteredImageLandmarks,
+        {
+          radius: 4,
+        }
+      )
+
+      // =====================================================
+      // BUILD POSE FRAME
+      // =====================================================
+
+      const poseFrame =
+        createPoseFrame(
+          {
+            landmarks: [
+              filteredImageLandmarks,
+            ],
+
+            worldLandmarks:
+              filteredWorldLandmarks.length > 0
+                ? [
+                    filteredWorldLandmarks,
+                  ]
+                : [],
+          },
+
+          timestamp
+        )
+
+      // =====================================================
+      // RUN SQUAT ANALYZER
+      // =====================================================
+
+      const analysis =
+        squatAnalyzerRef.current.update(
+          poseFrame
+        )
+
+      // =====================================================
+      // PERSON EXISTS EVEN IF ANALYSIS QUALITY IS LOW
+      // =====================================================
+
+      setPersonDetected(true)
+
+      // =====================================================
+      // POSE QUALITY
+      // =====================================================
+
+      setPoseQuality(
+        analysis.tracking.poseQuality
+      )
+
+      // =====================================================
+      // LOW QUALITY FRAME
+      //
+      // Skeleton remains visible.
+      // Rep engine simply doesn't trust this frame.
+      // =====================================================
+
+      if (
+        !analysis.tracking.usable
+      ) {
+        setStatus(
+          'Person detected · waiting for clearer body visibility'
+        )
+
+        if (
+          processingActiveRef.current
+        ) {
+          animationFrameRef.current =
+            requestAnimationFrame(
+              processCurrentFrame
+            )
+        }
+
+        return
+      }
+
+      // =====================================================
+      // VALID ANALYSIS
+      // =====================================================
+
+      setStatus(
+        analysis.repEvent?.accepted
+          ? 'Valid squat rep completed ✓'
+          : `Tracking squat · ${analysis.phase}`
+      )
+
+      // =====================================================
+      // PHASE
+      // =====================================================
+
+      setPhase(
+        analysis.phase
+      )
+
+      // =====================================================
+      // REPS
+      // =====================================================
+
+      setReps(
+        analysis.reps
+      )
+
+      // =====================================================
+      // KNEE TELEMETRY
+      // =====================================================
+
+      setLeftKnee(
+        Number.isFinite(
+          analysis.knee.left
+        )
+          ? analysis.knee.left
+          : null
+      )
+
+      setRightKnee(
+        Number.isFinite(
+          analysis.knee.right
+        )
+          ? analysis.knee.right
+          : null
+      )
+
+      setAverageKnee(
+        Number.isFinite(
+          analysis.knee.average
+        )
+          ? analysis.knee.average
+          : null
+      )
+
+      // =====================================================
+      // REP EVENT
+      // =====================================================
+
+      if (
+        analysis.repEvent?.completed
+      ) {
+        if (
+          analysis.repEvent.accepted
+        ) {
+          setStatus(
+            `Rep #${analysis.reps} completed ✓`
+          )
+        } else {
+          setStatus(
+            `Movement completed but rejected: ${
+              analysis.repEvent.reason ??
+              'validation'
+            }`
+          )
+        }
+      }
+
+      // =====================================================
+      // LATEST REP
+      // =====================================================
+
+      if (
+        analysis.latestRep
+      ) {
+        setLatestRep(
+          analysis.latestRep
+        )
+
+        if (
+          Number.isFinite(
+            analysis.latestRep.rom
+          )
+        ) {
+          setRom(
+            analysis.latestRep.rom
+          )
+        }
+      }
+    } catch (error) {
+      console.error(
+        'Pose processing error:',
+        error
+      )
+
+      setStatus(
+        error instanceof Error
+          ? `Pose error: ${error.message}`
+          : 'Pose processing error'
+      )
     }
 
-    animationFrameRef.current = requestAnimationFrame(loop)
+    // =======================================================
+    // NEXT FRAME
+    // =======================================================
+
+    if (
+      processingActiveRef.current
+    ) {
+      animationFrameRef.current =
+        requestAnimationFrame(
+          processCurrentFrame
+        )
+    } else {
+      animationFrameRef.current =
+        null
+    }
   }
 
-  const handleCamera = async () => {
-    stopProcessing()
+
+  // =========================================================
+  // START AI PROCESSING
+  // =========================================================
+
+  function startProcessing() {
+    if (
+      processingActiveRef.current
+    ) {
+      return
+    }
+
+    if (
+      !poseLandmarkerRef.current
+    ) {
+      setStatus(
+        'MediaPipe is still loading...'
+      )
+
+      return
+    }
+
+    processingActiveRef.current =
+      true
+
+    setCameraReady(true)
+
+    animationFrameRef.current =
+      requestAnimationFrame(
+        processCurrentFrame
+      )
+  }
+
+
+  // =========================================================
+  // CAMERA MODE
+  // =========================================================
+
+  async function handleCamera() {
+    stopSource()
 
     setMode('camera')
-    setVideoName('')
-    setStatus('Requesting camera...')
+
+    setStatus(
+      'Requesting camera...'
+    )
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      })
+      const stream =
+        await navigator.mediaDevices.getUserMedia(
+          {
+            video: {
+              facingMode:
+                'user',
 
-      streamRef.current = stream
+              width: {
+                ideal: 1280,
+              },
 
-      const video = videoRef.current
+              height: {
+                ideal: 720,
+              },
+            },
+
+            audio: false,
+          }
+        )
+
+      streamRef.current =
+        stream
+
+      const video =
+        videoRef.current
 
       if (!video) {
-        throw new Error('Video element not available')
+        throw new Error(
+          'Video element not available.'
+        )
       }
 
-      video.srcObject = stream
-      video.muted = true
-      video.playsInline = true
+      video.srcObject =
+        stream
+
+      video.removeAttribute(
+        'src'
+      )
+
+      video.muted =
+        true
+
+      video.playsInline =
+        true
+
+      video.controls =
+        false
+
+      endedRef.current =
+        false
+
+      video.onplay =
+        () => {
+          startProcessing()
+        }
+
+      video.onpause =
+        () => {
+          stopProcessing()
+
+          clearCanvas()
+        }
+
+      video.onseeked =
+        () => {
+          resetAnalysis()
+
+          clearCanvas()
+        }
+
+      video.onended =
+        () => {
+          stopProcessing()
+
+          clearCanvas()
+
+          setCameraReady(false)
+
+          setStatus(
+            `Camera stream ended — ${squatAnalyzerRef.current.repEngine.reps} squat reps`
+          )
+        }
 
       await video.play()
 
       setCameraReady(true)
-      setStatus('Camera running ✓')
 
-      processVideo()
+      setStatus(
+        'Camera running ✓'
+      )
     } catch (error) {
-      console.error('Camera error:', error)
+      console.error(
+        'Camera error:',
+        error
+      )
 
       setCameraReady(false)
 
-      if (error?.name === 'NotFoundError') {
+      if (
+        error?.name ===
+        'NotFoundError'
+      ) {
         setStatus(
-          'No camera found — use Upload Video instead'
+          'No camera found — use Upload Video'
         )
-      } else if (error?.name === 'NotAllowedError') {
+      } else if (
+        error?.name ===
+        'NotAllowedError'
+      ) {
         setStatus(
-          'Camera permission denied — use Upload Video instead'
+          'Camera permission denied — use Upload Video'
         )
       } else {
         setStatus(
@@ -299,119 +979,283 @@ export default function LivePoseTest() {
     }
   }
 
-  const handleVideoFile = event => {
-    const file = event.target.files?.[0]
+
+  // =========================================================
+  // VIDEO UPLOAD
+  // =========================================================
+
+  function handleVideoFile(event) {
+    const file =
+      event.target.files?.[0]
 
     if (!file) {
       return
     }
 
-    stopProcessing()
+    stopSource()
 
-    if (!file.type.startsWith('video/')) {
-      setStatus('Please choose a video file.')
+    if (
+      !file.type.startsWith(
+        'video/'
+      )
+    ) {
+      setStatus(
+        'Please select a video file.'
+      )
+
       return
     }
 
-    const videoUrl = URL.createObjectURL(file)
+    const url =
+      URL.createObjectURL(
+        file
+      )
 
-    videoUrlRef.current = videoUrl
+    videoUrlRef.current =
+      url
 
     setMode('video')
-    setVideoName(file.name)
 
-    const video = videoRef.current
+    setSourceName(
+      file.name
+    )
+
+    endedRef.current =
+      false
+
+    const video =
+      videoRef.current
 
     if (!video) {
-      setStatus('Video element not available')
+      setStatus(
+        'Video element not available.'
+      )
+
       return
     }
 
-    video.srcObject = null
-    video.src = videoUrl
-    video.muted = true
-    video.playsInline = true
-    video.controls = true
+    video.srcObject =
+      null
 
-    video.onloadedmetadata = async () => {
-      try {
-        await video.play()
+    video.src =
+      url
 
-        setCameraReady(true)
-        setStatus('Analyzing uploaded video...')
+    video.muted =
+      true
 
-        processVideo()
-      } catch (error) {
-        console.error('Video playback error:', error)
+    video.playsInline =
+      true
+
+    video.controls =
+      true
+
+    // =======================================================
+    // PLAY
+    // =======================================================
+
+    video.onplay =
+      () => {
+        // If the browser is replaying a video that already
+        // reached the end, start a completely fresh analysis.
+        if (
+          endedRef.current
+        ) {
+          endedRef.current =
+            false
+
+          resetAnalysis()
+
+          clearCanvas()
+        }
+
+        startProcessing()
 
         setStatus(
-          error instanceof Error
-            ? error.message
-            : 'Could not play video'
+          'Analyzing uploaded video...'
         )
       }
-    }
+
+    // =======================================================
+    // PAUSE
+    // =======================================================
+
+    video.onpause =
+      () => {
+        stopProcessing()
+
+        clearCanvas()
+      }
+
+    // =======================================================
+    // SEEK
+    // =======================================================
+
+    video.onseeked =
+      () => {
+        // Previous temporal information is no longer valid
+        // after a seek, so start the analysis state over.
+        resetAnalysis()
+
+        clearCanvas()
+      }
+
+    // =======================================================
+    // END
+    // =======================================================
+
+    video.onended =
+      () => {
+        stopProcessing()
+
+        clearCanvas()
+
+        setCameraReady(false)
+
+        endedRef.current =
+          true
+
+        const finalReps =
+          squatAnalyzerRef.current
+            .repEngine
+            .reps
+
+        setStatus(
+          `Video finished — ${finalReps} squat reps detected`
+        )
+      }
+
+    // =======================================================
+    // METADATA LOADED
+    // =======================================================
+
+    video.onloadedmetadata =
+      async () => {
+        try {
+          await video.play()
+
+          setCameraReady(true)
+
+          setStatus(
+            'Analyzing uploaded video...'
+          )
+        } catch (error) {
+          console.error(
+            'Video playback error:',
+            error
+          )
+
+          setStatus(
+            error instanceof Error
+              ? error.message
+              : 'Could not play video'
+          )
+        }
+      }
   }
 
-  const handleVideoEnded = () => {
-    setStatus('Video finished ✓')
-    setCameraReady(false)
 
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-  }
+  // =========================================================
+  // RENDER
+  // =========================================================
 
   return (
     <div
       style={{
-        minHeight: '100vh',
-        background: '#0d0f12',
-        color: '#fff',
-        padding: 24,
-        boxSizing: 'border-box',
+        minHeight:
+          '100vh',
+
+        background:
+          '#0d0f12',
+
+        color:
+          '#fff',
+
+        padding:
+          24,
+
+        boxSizing:
+          'border-box',
       }}
     >
       <div
         style={{
-          width: '100%',
-          maxWidth: 1000,
-          margin: '0 auto',
+          width:
+            '100%',
+
+          maxWidth:
+            1050,
+
+          margin:
+            '0 auto',
         }}
       >
-        <h1 style={{ marginBottom: 8 }}>
+        <h1
+          style={{
+            marginBottom:
+              8,
+          }}
+        >
           Live Pose Test
         </h1>
 
         <p
           style={{
-            marginTop: 0,
-            color: '#aeb4bd',
+            marginTop:
+              0,
+
+            color:
+              '#aeb4bd',
           }}
         >
-          MediaPipe Pose Landmarker — AI checkpoint
+          MediaPipe → filtering → squat analysis →
+          repetition validation
         </p>
+
+        {/* =================================================
+            SOURCE BUTTONS
+        ================================================= */}
 
         <div
           style={{
-            display: 'flex',
-            gap: 10,
-            flexWrap: 'wrap',
-            marginBottom: 16,
+            display:
+              'flex',
+
+            gap:
+              10,
+
+            flexWrap:
+              'wrap',
+
+            marginBottom:
+              16,
           }}
         >
           <button
             type="button"
-            onClick={handleCamera}
+            onClick={
+              handleCamera
+            }
             style={{
-              border: 0,
-              borderRadius: 10,
-              padding: '12px 18px',
-              cursor: 'pointer',
-              background: '#22c55e',
-              color: '#07110a',
-              fontWeight: 700,
+              border:
+                0,
+
+              borderRadius:
+                10,
+
+              padding:
+                '12px 18px',
+
+              cursor:
+                'pointer',
+
+              background:
+                '#22c55e',
+
+              color:
+                '#07110a',
+
+              fontWeight:
+                700,
             }}
           >
             📷 Use Camera
@@ -419,159 +1263,570 @@ export default function LivePoseTest() {
 
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() =>
+              fileInputRef.current?.click()
+            }
             style={{
-              border: 0,
-              borderRadius: 10,
-              padding: '12px 18px',
-              cursor: 'pointer',
-              background: '#30343b',
-              color: '#fff',
-              fontWeight: 700,
+              border:
+                0,
+
+              borderRadius:
+                10,
+
+              padding:
+                '12px 18px',
+
+              cursor:
+                'pointer',
+
+              background:
+                '#30343b',
+
+              color:
+                '#fff',
+
+              fontWeight:
+                700,
             }}
           >
             📁 Upload Video
           </button>
 
           <input
-            ref={fileInputRef}
+            ref={
+              fileInputRef
+            }
             type="file"
             accept="video/*"
-            onChange={handleVideoFile}
-            style={{ display: 'none' }}
+            onChange={
+              handleVideoFile
+            }
+            style={{
+              display:
+                'none',
+            }}
           />
         </div>
 
-        {videoName && (
+        {/* =================================================
+            SOURCE NAME
+        ================================================= */}
+
+        {sourceName && (
           <div
             style={{
-              color: '#aeb4bd',
-              marginBottom: 12,
-              fontSize: 14,
+              color:
+                '#aeb4bd',
+
+              marginBottom:
+                12,
+
+              fontSize:
+                14,
             }}
           >
-            Video: {videoName}
+            Video: {sourceName}
           </div>
         )}
 
+        {/* =================================================
+            VIDEO
+        ================================================= */}
+
         <div
           style={{
-            position: 'relative',
-            width: '100%',
-            aspectRatio: '16 / 9',
-            overflow: 'hidden',
-            borderRadius: 16,
-            background: '#000',
-            border: '1px solid #2a2f36',
+            position:
+              'relative',
+
+            width:
+              '100%',
+
+            aspectRatio:
+              '16 / 9',
+
+            overflow:
+              'hidden',
+
+            borderRadius:
+              16,
+
+            background:
+              '#000',
+
+            border:
+              '1px solid #2a2f36',
           }}
         >
           <video
-            ref={videoRef}
+            ref={
+              videoRef
+            }
             autoPlay
             muted
             playsInline
-            onEnded={handleVideoEnded}
             style={{
-              position: 'absolute',
-              inset: 0,
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
+              position:
+                'absolute',
+
+              inset:
+                0,
+
+              width:
+                '100%',
+
+              height:
+                '100%',
+
+              objectFit:
+                'contain',
             }}
           />
 
           <canvas
-            ref={canvasRef}
+            ref={
+              canvasRef
+            }
             style={{
-              position: 'absolute',
-              inset: 0,
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              pointerEvents: 'none',
+              position:
+                'absolute',
+
+              inset:
+                0,
+
+              width:
+                '100%',
+
+              height:
+                '100%',
+
+              objectFit:
+                'contain',
+
+              pointerEvents:
+                'none',
             }}
           />
+
+          {/* =================================================
+              REP HUD
+          ================================================= */}
+
+          <div
+            style={{
+              position:
+                'absolute',
+
+              top:
+                16,
+
+              left:
+                16,
+
+              padding:
+                '12px 16px',
+
+              borderRadius:
+                14,
+
+              background:
+                'rgba(0, 0, 0, 0.72)',
+
+              backdropFilter:
+                'blur(8px)',
+            }}
+          >
+            <div
+              style={{
+                fontSize:
+                  12,
+
+                color:
+                  '#9ca3af',
+              }}
+            >
+              SQUAT REPS
+            </div>
+
+            <div
+              style={{
+                fontSize:
+                  36,
+
+                lineHeight:
+                  1,
+
+                fontWeight:
+                  900,
+
+                marginTop:
+                  4,
+              }}
+            >
+              {reps}
+            </div>
+          </div>
         </div>
+
+        {/* =================================================
+            STATUS
+        ================================================= */}
 
         <div
           style={{
-            marginTop: 16,
-            display: 'grid',
+            marginTop:
+              16,
+
+            display:
+              'grid',
+
             gridTemplateColumns:
               'repeat(3, minmax(0, 1fr))',
-            gap: 12,
+
+            gap:
+              12,
+          }}
+        >
+          <InfoCard
+            title="Status"
+            value={status}
+          />
+
+          <InfoCard
+            title="Source"
+            value={
+              mode === 'camera'
+                ? 'Camera'
+                : mode === 'video'
+                  ? 'Uploaded video'
+                  : 'None'
+            }
+          />
+
+          <InfoCard
+            title="Detection / FPS"
+            value={`${personDetected ? 'Person ✓' : 'Searching...'} · ${fps} FPS`}
+          />
+        </div>
+
+        {/* =================================================
+            TELEMETRY
+        ================================================= */}
+
+        <div
+          style={{
+            marginTop:
+              12,
+
+            display:
+              'grid',
+
+            gridTemplateColumns:
+              'repeat(4, minmax(0, 1fr))',
+
+            gap:
+              12,
+          }}
+        >
+          <InfoCard
+            title="Phase"
+            value={phase}
+          />
+
+          <InfoCard
+            title="Left Knee"
+            value={
+              Number.isFinite(
+                leftKnee
+              )
+                ? `${leftKnee.toFixed(1)}°`
+                : '—'
+            }
+          />
+
+          <InfoCard
+            title="Right Knee"
+            value={
+              Number.isFinite(
+                rightKnee
+              )
+                ? `${rightKnee.toFixed(1)}°`
+                : '—'
+            }
+          />
+
+          <InfoCard
+            title="Average Knee"
+            value={
+              Number.isFinite(
+                averageKnee
+              )
+                ? `${averageKnee.toFixed(1)}°`
+                : '—'
+            }
+          />
+        </div>
+
+        {/* =================================================
+            QUALITY / ROM
+        ================================================= */}
+
+        <div
+          style={{
+            marginTop:
+              12,
+
+            display:
+              'grid',
+
+            gridTemplateColumns:
+              'repeat(3, minmax(0, 1fr))',
+
+            gap:
+              12,
+          }}
+        >
+          <InfoCard
+            title="Pose Quality"
+            value={
+              poseQuality
+                ? `${(
+                    poseQuality.score *
+                    100
+                  ).toFixed(0)}% · ${
+                    poseQuality.visibleLandmarks
+                  }/${
+                    poseQuality.totalLandmarks
+                  } visible`
+                : '—'
+            }
+          />
+
+          <InfoCard
+            title="Latest ROM"
+            value={
+              Number.isFinite(
+                rom
+              )
+                ? `${rom.toFixed(1)}°`
+                : '—'
+            }
+          />
+
+          <InfoCard
+            title="Latest Rep"
+            value={
+              latestRep
+                ? `#${latestRep.number} · ${
+                    latestRep.accepted
+                      ? 'Accepted'
+                      : 'Rejected'
+                  }`
+                : '—'
+            }
+          />
+        </div>
+
+        {/* =================================================
+            LAST REP DETAIL
+        ================================================= */}
+
+        {latestRep && (
+          <div
+            style={{
+              marginTop:
+                12,
+
+              padding:
+                16,
+
+              borderRadius:
+                12,
+
+              background:
+                '#171a1f',
+            }}
+          >
+            <div
+              style={{
+                fontWeight:
+                  700,
+
+                marginBottom:
+                  10,
+              }}
+            >
+              Rep #{latestRep.number}
+            </div>
+
+            <div
+              style={{
+                display:
+                  'grid',
+
+                gridTemplateColumns:
+                  'repeat(4, minmax(0, 1fr))',
+
+                gap:
+                  12,
+
+                color:
+                  '#c5cbd3',
+
+                fontSize:
+                  14,
+              }}
+            >
+              <div>
+                ROM:{' '}
+                {Number.isFinite(
+                  latestRep.rom
+                )
+                  ? `${latestRep.rom.toFixed(
+                      1
+                    )}°`
+                  : '—'}
+              </div>
+
+              <div>
+                Duration:{' '}
+                {Number.isFinite(
+                  latestRep.durationMs
+                )
+                  ? `${Math.round(
+                      latestRep.durationMs
+                    )} ms`
+                  : '—'}
+              </div>
+
+              <div>
+                Min knee:{' '}
+                {Number.isFinite(
+                  latestRep.minimumKneeAngle
+                )
+                  ? `${latestRep.minimumKneeAngle.toFixed(
+                      1
+                    )}°`
+                  : '—'}
+              </div>
+
+              <div>
+                Asymmetry:{' '}
+                {Number.isFinite(
+                  latestRep.maximumKneeAsymmetry
+                )
+                  ? `${latestRep.maximumKneeAsymmetry.toFixed(
+                      1
+                    )}°`
+                  : '—'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =================================================
+            PIPELINE
+        ================================================= */}
+
+        <div
+          style={{
+            marginTop:
+              16,
+
+            padding:
+              16,
+
+            borderRadius:
+              12,
+
+            background:
+              '#111318',
+
+            color:
+              '#8f96a0',
+
+            fontSize:
+              13,
+
+            lineHeight:
+              1.6,
           }}
         >
           <div
             style={{
-              background: '#171a1f',
-              borderRadius: 12,
-              padding: 16,
+              color:
+                '#fff',
+
+              fontWeight:
+                700,
+
+              marginBottom:
+                8,
             }}
           >
-            <div
-              style={{
-                color: '#8f96a0',
-                fontSize: 13,
-              }}
-            >
-              Status
-            </div>
-
-            <div style={{ marginTop: 6 }}>
-              {status}
-            </div>
+            AI pipeline
           </div>
 
-          <div
-            style={{
-              background: '#171a1f',
-              borderRadius: 12,
-              padding: 16,
-            }}
-          >
-            <div
-              style={{
-                color: '#8f96a0',
-                fontSize: 13,
-              }}
-            >
-              Source
-            </div>
-
-            <div style={{ marginTop: 6 }}>
-              {mode === 'camera'
-                ? 'Camera'
-                : mode === 'video'
-                  ? 'Uploaded video'
-                  : 'None'}
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: '#171a1f',
-              borderRadius: 12,
-              padding: 16,
-            }}
-          >
-            <div
-              style={{
-                color: '#8f96a0',
-                fontSize: 13,
-              }}
-            >
-              Detection / FPS
-            </div>
-
-            <div style={{ marginTop: 6 }}>
-              {personDetected
-                ? 'Person ✓'
-                : 'Searching...'}{' '}
-              · {fps} FPS
-            </div>
+          <div>
+            MediaPipe → PoseFrame → One Euro →
+            SquatAnalyzer → Features →
+            RepStateMachine
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ===========================================================
+// INFO CARD
+// ===========================================================
+
+function InfoCard({
+  title,
+  value,
+}) {
+  return (
+    <div
+      style={{
+        background:
+          '#171a1f',
+
+        borderRadius:
+          12,
+
+        padding:
+          16,
+
+        minWidth:
+          0,
+      }}
+    >
+      <div
+        style={{
+          color:
+            '#8f96a0',
+
+          fontSize:
+            13,
+        }}
+      >
+        {title}
+      </div>
+
+      <div
+        style={{
+          marginTop:
+            6,
+
+          fontWeight:
+            600,
+
+          overflowWrap:
+            'anywhere',
+        }}
+      >
+        {value}
       </div>
     </div>
   )
