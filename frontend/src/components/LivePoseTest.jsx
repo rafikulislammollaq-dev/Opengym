@@ -17,6 +17,14 @@ import {
   SquatAnalyzer,
 } from '../ai/exercises/SquatAnalyzer.js'
 
+import {
+  SquatFormAnalyzer,
+} from '../ai/exercises/SquatFormAnalyzer.js'
+
+import {
+  GymCoachService,
+} from '../ai/coach/GymCoachService.js'
+
 
 const WASM_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm'
@@ -58,6 +66,16 @@ export default function LivePoseTest() {
 
   const squatAnalyzerRef = useRef(
     new SquatAnalyzer()
+  )
+
+  const formAnalyzerRef = useRef(
+    new SquatFormAnalyzer({
+      cameraView: 'side',
+    })
+  )
+
+  const coachServiceRef = useRef(
+    new GymCoachService()
   )
 
   // =========================================================
@@ -123,6 +141,12 @@ export default function LivePoseTest() {
 
   const [latestRep, setLatestRep] =
     useState(null)
+
+  const [latestForm, setLatestForm] =
+    useState(null)
+
+  const [latestCoach, setLatestCoach] =
+    useState('')
 
 
   // =========================================================
@@ -301,6 +325,8 @@ export default function LivePoseTest() {
 
     squatAnalyzerRef.current.reset()
 
+    formAnalyzerRef.current.reset()
+
     setReps(0)
 
     setPhase('init')
@@ -316,6 +342,10 @@ export default function LivePoseTest() {
     setPoseQuality(null)
 
     setLatestRep(null)
+
+    setLatestForm(null)
+
+    setLatestCoach('')
 
     setPersonDetected(false)
   }
@@ -736,24 +766,88 @@ export default function LivePoseTest() {
       )
 
       // =====================================================
+      // FORM EVIDENCE LAYER
+      //
+      // Geometry stays internal. This layer collects
+      // structured evidence that a later LLM can turn into
+      // normal human coaching language.
+      // =====================================================
+
+      formAnalyzerRef.current.observeFrame({
+        poseFrame,
+        timestampMs: timestamp,
+        flexion:
+          Number.isFinite(
+            analysis.flexion
+          )
+            ? analysis.flexion
+            : null,
+        leftKneeAngle:
+          Number.isFinite(
+            analysis.knee.left
+          )
+            ? analysis.knee.left
+            : null,
+        rightKneeAngle:
+          Number.isFinite(
+            analysis.knee.right
+          )
+            ? analysis.knee.right
+            : null,
+        phase: analysis.phase,
+      })
+
+      // =====================================================
       // REP EVENT
       // =====================================================
 
       if (
         analysis.repEvent?.completed
       ) {
+        const formReport =
+          formAnalyzerRef.current.completeRep({
+            timestampMs: timestamp,
+            repNumber: analysis.reps,
+            accepted:
+              !!analysis.repEvent.accepted,
+            romDegrees:
+              Number.isFinite(
+                analysis.repEvent.rom
+              )
+                ? analysis.repEvent.rom
+                : Number.isFinite(
+                    analysis.latestRep?.rom
+                  )
+                  ? analysis.latestRep.rom
+                  : null,
+          })
+
+        setLatestForm(
+          formReport
+        )
+
+        const coaching =
+          coachServiceRef.current.evaluateRep({
+            exercise: 'squat',
+            report: formReport,
+          })
+
+        setLatestCoach(
+          coaching.coaching
+        )
+
         if (
           analysis.repEvent.accepted
         ) {
           setStatus(
-            `Rep #${analysis.reps} completed ✓`
+            `Rep #${analysis.reps} completed ✓ · form evidence captured`
           )
         } else {
           setStatus(
             `Movement completed but rejected: ${
               analysis.repEvent.reason ??
               'validation'
-            }`
+            } · form evidence captured`
           )
         }
       }
@@ -1208,7 +1302,7 @@ export default function LivePoseTest() {
           }}
         >
           MediaPipe → filtering → squat analysis →
-          repetition validation
+          form analysis → rule-based coaching
         </p>
 
         {/* =================================================
@@ -1723,6 +1817,71 @@ export default function LivePoseTest() {
           </div>
         )}
 
+        {latestForm && (
+          <div
+            style={{
+              marginTop:
+                12,
+
+              padding:
+                16,
+
+              borderRadius:
+                12,
+
+              background:
+                '#171a1f',
+            }}
+          >
+            <div
+              style={{
+                fontWeight:
+                  700,
+
+                marginBottom:
+                  8,
+              }}
+            >
+              Coach
+            </div>
+
+            {latestCoach && (
+              <div
+                style={{
+                  color:
+                    '#ffffff',
+
+                  fontSize:
+                    15,
+
+                  lineHeight:
+                    1.55,
+                }}
+              >
+                {latestCoach}
+              </div>
+            )}
+
+            <div
+              style={{
+                marginTop:
+                  12,
+
+                color:
+                  '#8f96a0',
+
+                fontSize:
+                  13,
+
+                lineHeight:
+                  1.5,
+              }}
+            >
+              Rule-based coaching · book v1.0.0 · Rep #{latestForm.repNumber}
+            </div>
+          </div>
+        )}
+
         {/* =================================================
             PIPELINE
         ================================================= */}
@@ -1768,8 +1927,8 @@ export default function LivePoseTest() {
 
           <div>
             MediaPipe → PoseFrame → One Euro →
-            SquatAnalyzer → Features →
-            RepStateMachine
+            SquatAnalyzer → RepStateMachine →
+            SquatFormAnalyzer → Rule Coach → Feedback
           </div>
         </div>
       </div>

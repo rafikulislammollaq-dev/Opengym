@@ -31,52 +31,23 @@ function makePose({
 } = {}) {
   const points = Array.from(
     { length: 33 },
-    () =>
-      landmark(
-        0.5,
-        0.5,
-        0,
-        1
-      )
+    () => landmark(
+      0.5,
+      0.5,
+      0,
+      1
+    )
   )
 
-  /*
-   * Build the torso geometrically.
-   *
-   * Hip midpoint:
-   *   x = 0.50
-   *   y = 0.55
-   *
-   * Shoulder midpoint:
-   *   y = 0.25
-   *
-   * torsoHeight = 0.30
-   *
-   * For a requested torso angle θ:
-   *
-   *   tan(θ) = horizontal / vertical
-   *
-   * therefore:
-   *
-   *   horizontal = tan(θ) × vertical
-   *
-   * This makes the fixture represent the requested
-   * torso angle instead of merely shifting the shoulders
-   * by an arbitrary amount.
-   */
   const torsoHeight = 0.30
-
-  const horizontalOffset =
-    Math.tan(
-      torsoLean *
-        Math.PI /
-        180
-    ) *
-    torsoHeight
-
   const shoulderCenterX =
     0.50 +
-    horizontalOffset
+      Math.tan(
+        torsoLean *
+          Math.PI /
+          180
+      ) *
+      torsoHeight
 
   points[11] =
     landmark(
@@ -94,9 +65,6 @@ function makePose({
       1
     )
 
-  /*
-   * Hips
-   */
   points[23] =
     landmark(
       0.48,
@@ -113,9 +81,6 @@ function makePose({
       1
     )
 
-  /*
-   * Knees
-   */
   points[25] =
     landmark(
       0.39 +
@@ -134,13 +99,10 @@ function makePose({
       1
     )
 
-  /*
-   * Ankles
-   */
   points[27] =
     landmark(
       0.38,
-      0.90,
+      0.9,
       0,
       1
     )
@@ -148,19 +110,15 @@ function makePose({
   points[28] =
     landmark(
       0.62,
-      0.90,
+      0.9,
       0,
       1
     )
 
   return {
     timestampMs: 0,
-
-    landmarks:
-      points,
-
-    worldLandmarks:
-      points,
+    landmarks: points,
+    worldLandmarks: points,
   }
 }
 
@@ -184,19 +142,13 @@ describe(
         analyzer.observeFrame({
           poseFrame:
             makePose(),
-
           timestampMs:
             1100,
-
-          flexion:
-            10,
-
+          flexion: 10,
           leftKneeAngle:
             165,
-
           rightKneeAngle:
             164,
-
           phase:
             'descending',
         })
@@ -204,22 +156,15 @@ describe(
         analyzer.observeFrame({
           poseFrame:
             makePose({
-              torsoLean:
-                12,
+              torsoLean: 12,
             }),
-
           timestampMs:
             1600,
-
-          flexion:
-            72,
-
+          flexion: 72,
           leftKneeAngle:
             100,
-
           rightKneeAngle:
             102,
-
           phase:
             'bottom',
         })
@@ -228,12 +173,8 @@ describe(
           analyzer.completeRep({
             timestampMs:
               2700,
-
-            accepted:
-              true,
-
-            romDegrees:
-              72,
+            accepted: true,
+            romDegrees: 72,
           })
 
         expect(
@@ -245,17 +186,13 @@ describe(
         ).toBe(true)
 
         expect(
-          report.assessment
-            .depth
-            .status
+          report.assessment.depth.status
         ).toBe(
           FORM_STATUS.GOOD
         )
 
         expect(
-          report.assessment
-            .kneeTracking
-            .status
+          report.assessment.kneeTracking.status
         ).toBe(
           FORM_STATUS.NOT_ASSESSED
         )
@@ -279,22 +216,15 @@ describe(
         analyzer.observeFrame({
           poseFrame:
             makePose({
-              torsoLean:
-                45,
+              torsoLean: 45,
             }),
-
           timestampMs:
             500,
-
-          flexion:
-            40,
-
+          flexion: 40,
           leftKneeAngle:
             120,
-
           rightKneeAngle:
             121,
-
           phase:
             'bottom',
         })
@@ -303,18 +233,12 @@ describe(
           analyzer.completeRep({
             timestampMs:
               1500,
-
-            accepted:
-              true,
-
-            romDegrees:
-              70,
+            accepted: true,
+            romDegrees: 70,
           })
 
         expect(
-          report.assessment
-            .torso
-            .status
+          report.assessment.torso.status
         ).toBe(
           FORM_STATUS.ATTENTION
         )
@@ -341,19 +265,13 @@ describe(
               kneeGap:
                 0.12,
             }),
-
           timestampMs:
             500,
-
-          flexion:
-            55,
-
+          flexion: 55,
           leftKneeAngle:
             115,
-
           rightKneeAngle:
             128,
-
           phase:
             'bottom',
         })
@@ -362,18 +280,12 @@ describe(
           analyzer.completeRep({
             timestampMs:
               1500,
-
-            accepted:
-              true,
-
-            romDegrees:
-              70,
+            accepted: true,
+            romDegrees: 70,
           })
 
         expect(
-          report.assessment
-            .kneeTracking
-            .status
+          report.assessment.kneeTracking.status
         ).not.toBe(
           FORM_STATUS.NOT_ASSESSED
         )
@@ -394,19 +306,13 @@ describe(
         analyzer.observeFrame({
           poseFrame:
             makePose(),
-
           timestampMs:
             500,
-
-          flexion:
-            70,
-
+          flexion: 70,
           leftKneeAngle:
             100,
-
           rightKneeAngle:
             101,
-
           phase:
             'bottom',
         })
@@ -414,19 +320,14 @@ describe(
         analyzer.completeRep({
           timestampMs:
             1500,
-
-          accepted:
-            true,
-
-          romDegrees:
-            70,
+          accepted: true,
+          romDegrees: 70,
         })
 
         const prompt =
           analyzer.buildLLMPrompt({
             workout: {
-              setNumber:
-                2,
+              setNumber: 2,
             },
           })
 
